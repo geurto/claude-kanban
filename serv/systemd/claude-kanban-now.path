@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the Claude board for run-now cards
+
+[Path]
+PathChanged=/srv/livesync-bridge/data/claude/tasks
+Unit=claude-kanban-now.service
+
+[Install]
+WantedBy=paths.target

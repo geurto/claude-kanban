@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# board-run now|night
+#   now   – run queued cards with `run: now`, re-checking until none are left
+#   night – run every queued card, then write the morning report
+set -euo pipefail
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
+
+MODE=${1:-night}
+[[ "$MODE" == now || "$MODE" == night ]] || { echo "usage: board-run now|night" >&2; exit 64; }
+
+ensure_dirs
+exec 9>"$STATE_DIR/run.lock"
+if ! flock -n 9; then
+  log "another run is active; it re-checks the board before it exits"
+  exit 0
+fi
+
+keep_awake_start
+trap keep_awake_stop EXIT
+
+# --- card selection ----------------------------------------------------------
+
+# next_card -> path of the oldest queued card for this mode, or nothing
+next_card() {
+  local f status run created
+  for f in "$TASKS_DIR"/*.md; do
+    [[ -e "$f" ]] || continue
+    status=$(fm_get "$f" status)
+    [[ "$status" == queued ]] || continue
+    run=$(fm_get "$f" run)
+    [[ "$MODE" == night || "$run" == now ]] || continue
+    created=$(fm_get "$f" created)
+    printf '%s\t%s\n' "${created:-9999}" "$f"
+  done | sort | head -n1 | cut -f2-
+}
+
+finish_card() {  # finish_card CARD STATUS [KEY=VALUE...]
+  local card=$1 status=$2 kv; shift 2
+  fm_set "$card" status "$status"
+  fm_set "$card" ran "$(date '+%Y-%m-%d %H:%M')"
+  for kv in "$@"; do
+    if [[ -n "${kv#*=}" ]]; then fm_set "$card" "${kv%%=*}" "${kv#*=}"; else fm_del "$card" "${kv%%=*}"; fi
+  done
+}
+
+# read_result RUN_DIR KEY -> value from the result file Claude wrote
+read_result() { jq -r --arg k "$2" '.[$k] // ""' "$1/result.json" 2>/dev/null || true; }
+
+valid_result() {
+  [[ -f "$1/result.json" ]] && jq -e '.status == "done" or .status == "blocked"' "$1/result.json" >/dev/null 2>&1
+}
+
+# --- research and design -----------------------------------------------------
+
+run_research() {
+  local card=$1 slug=$2 type=$3 rundir=$4
+  local note="output/$slug-result.md"
+  mkdir -p "$VAULT_DIR/.claude-run"
+  rm -f "$VAULT_DIR/.claude-run/result.json"
+
+  { render_prompt "$BOARD_REPO/prompts/research.md" \
+      "SLUG=$slug" "TYPE=$type" "NOTE=$note" "DATE=$(date +%F)"
+    echo; echo "=== TASK CARD: tasks/$slug.md ==="; card_body "$card"
+  } > "$rundir/prompt.md"
+
+  run_claude research "$VAULT_DIR" "$rundir/prompt.md" "$rundir/claude.json" \
+    "$CODE_DIR" "$WORKTREES_DIR" "$STATE_DIR" || log "claude exited non-zero for $slug"
+
+  [[ -f "$VAULT_DIR/.claude-run/result.json" ]] && mv "$VAULT_DIR/.claude-run/result.json" "$rundir/"
+
+  if ! valid_result "$rundir"; then
+    finish_card "$card" blocked "question=The run ended without a result. Check the log on the PC: $rundir"
+    event slug="$slug" type="$type" status=failed title="$slug"
+    return
+  fi
+
+  local status title summary question
+  status=$(read_result "$rundir" status)
+  title=$(read_result "$rundir" title)
+  summary=$(read_result "$rundir" summary)
+  question=$(read_result "$rundir" question)
+
+  if [[ "$status" == "done" && -f "$VAULT_DIR/$note" ]]; then
+    finish_card "$card" review "result=[[$slug-result]]" "summary=$summary" "question="
+    event slug="$slug" type="$type" status=review title="$title" summary="$summary" note="$note"
+  else
+    [[ "$status" == "done" ]] && question="Claude reported done but wrote no result note."
+    finish_card "$card" blocked "question=$question" "summary=$summary"
+    event slug="$slug" type="$type" status=blocked title="$title" question="$question"
+  fi
+}
+
+# --- code --------------------------------------------------------------------
+
+run_code() {
+  local card=$1 slug=$2 rundir=$3
+  local repo repodir branch wt base
+  repo=$(fm_get "$card" repo)
+  repodir="$CODE_DIR/$repo"
+  if [[ -z "$repo" || ! -d "$repodir/.git" ]]; then
+    finish_card "$card" blocked "question=Set \`repo\` to a folder in $CODE_DIR (got '${repo}')."
+    event slug="$slug" type=code status=blocked title="$slug" question="unknown repo '$repo'"
+    return
+  fi
+
+  git -C "$repodir" fetch -q origin
+  base=$(git -C "$repodir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || true
+  base=${base:-main}
+  branch="claude/board-$slug"
+  wt="$WORKTREES_DIR/$slug"
+
+  if [[ ! -d "$wt" ]]; then
+    git -C "$repodir" worktree prune
+    if git -C "$repodir" show-ref -q --verify "refs/remotes/origin/$branch"; then
+      # follow-up on an existing PR: continue from what is on GitHub
+      git -C "$repodir" worktree add -q -B "$branch" "$wt" "origin/$branch"
+    elif git -C "$repodir" show-ref -q --verify "refs/heads/$branch"; then
+      git -C "$repodir" worktree add -q "$wt" "$branch"
+    else
+      git -C "$repodir" worktree add -q -b "$branch" "$wt" "origin/$base"
+    fi
+  fi
+  local exclude
+  exclude="$(git -C "$wt" rev-parse --git-common-dir)/info/exclude"
+  mkdir -p "$(dirname "$exclude")"
+  grep -qxF '.claude-run/' "$exclude" 2>/dev/null || echo '.claude-run/' >> "$exclude"
+  mkdir -p "$wt/.claude-run"
+  rm -f "$wt/.claude-run/"{result.json,pr.md}
+
+  { render_prompt "$BOARD_REPO/prompts/code.md" \
+      "SLUG=$slug" "REPO=$repo" "BRANCH=$branch" "BASE=$base" "DATE=$(date +%F)"
+    echo; echo "=== TASK CARD: tasks/$slug.md ==="; card_body "$card"
+  } > "$rundir/prompt.md"
+
+  run_claude code "$wt" "$rundir/prompt.md" "$rundir/claude.json" \
+    "$VAULT_DIR" "$STATE_DIR" || log "claude exited non-zero for $slug"
+
+  [[ -f "$wt/.claude-run/result.json" ]] && cp "$wt/.claude-run/result.json" "$rundir/"
+  [[ -f "$wt/.claude-run/pr.md" ]] && cp "$wt/.claude-run/pr.md" "$rundir/"
+
+  if ! valid_result "$rundir"; then
+    finish_card "$card" blocked "question=The run ended without a result. Worktree kept at $wt, log in $rundir"
+    event slug="$slug" type=code status=failed title="$slug" repo="$repo"
+    return
+  fi
+
+  local status title summary question pr=""
+  status=$(read_result "$rundir" status)
+  title=$(read_result "$rundir" title)
+  summary=$(read_result "$rundir" summary)
+  question=$(read_result "$rundir" question)
+
+  if [[ "$status" == blocked ]]; then
+    finish_card "$card" blocked "question=$question" "summary=$summary"
+    event slug="$slug" type=code status=blocked title="$title" repo="$repo" question="$question"
+    return   # worktree kept, so a re-run continues where it stopped
+  fi
+
+  # Done: the runner (not Claude) commits, pushes and opens the PR.
+  if [[ -n "$(git -C "$wt" status --porcelain)" ]]; then
+    git -C "$wt" add -A
+    git -C "$wt" commit -q -m "${title:-Board task $slug}" -m "$summary" -m "Board card: $slug"
+  fi
+  if [[ -n "$(git -C "$wt" log --oneline "origin/$base..HEAD")" ]]; then
+    git -C "$wt" push -q -u origin "$branch"
+    [[ -f "$rundir/pr.md" ]] || printf '%s\n\nBoard card: %s\n' "$summary" "$slug" > "$rundir/pr.md"
+    pr=$(cd "$wt" && gh pr view "$branch" --json url -q .url 2>/dev/null) || \
+      pr=$(cd "$wt" && gh pr create --draft --base "$base" --head "$branch" \
+             --title "${title:-Board task $slug}" --body-file "$rundir/pr.md")
+    git -C "$repodir" worktree remove --force "$wt"
+    finish_card "$card" review "pr=$pr" "summary=$summary" "question="
+    event slug="$slug" type=code status=review title="$title" repo="$repo" pr="$pr" summary="$summary"
+  else
+    git -C "$repodir" worktree remove --force "$wt"
+    finish_card "$card" review "summary=No code changes. $summary" "question="
+    event slug="$slug" type=code status=review title="$title" repo="$repo" summary="No code changes. $summary"
+  fi
+}
+
+# --- main loop ---------------------------------------------------------------
+
+run_card() {
+  local card=$1 slug type rundir
+  slug=$(basename "$card" .md)
+  type=$(fm_get "$card" type)
+  rundir="$RUNS_DIR/$(date +%Y%m%d-%H%M%S)-$slug"
+  mkdir -p "$rundir"
+  log "running $slug ($type) -> $rundir"
+
+  fm_set "$card" status running
+  sync_push
+
+  local rc=0
+  case "$type" in
+    # subshell with errexit on, outer errexit off: a failing step ends this card only
+    research|design) set +e; ( set -e; run_research "$card" "$slug" "$type" "$rundir" ); rc=$?; set -e ;;
+    code)            set +e; ( set -e; run_code "$card" "$slug" "$rundir" ); rc=$?; set -e ;;
+    *) finish_card "$card" blocked "question=Unknown type '$type'. Use research, design or code."
+       event slug="$slug" type="$type" status=blocked title="$slug" question="unknown type" ;;
+  esac
+  if (( rc != 0 )); then
+    # a git, gh or sync step failed; don't let one card stop the whole run
+    log "runner error ($rc) on $slug"
+    finish_card "$card" blocked "question=Runner error (exit $rc) after Claude finished, e.g. a failed push or PR. Log: $rundir"
+    event slug="$slug" type="$type" status=failed title="$slug"
+  fi
+  sync_push
+}
+
+for _round in $(seq 1 10); do
+  sync_pull
+  card=$(next_card)
+  [[ -n "$card" ]] || break
+  while [[ -n "$card" ]]; do
+    if ! usage_ok; then
+      log "weekly usage at or above ${CAP_WEEKLY}% (or unknown with USAGE_UNKNOWN=deny); stopping"
+      event status=capped title="Stopped at the usage cap" cap="$CAP_WEEKLY" pct="$("$BOARD_REPO/bin/usage-pct" 2>/dev/null || echo unknown)"
+      break 2
+    fi
+    run_card "$card"
+    card=$(next_card)
+  done
+done
+
+if [[ "$MODE" == night ]]; then
+  "$BOARD_REPO/bin/board-report" || log "report failed"
+  sync_push
+fi
+log "done ($MODE)"

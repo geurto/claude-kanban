@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "Write(./output/**)",
+      "Edit(./output/**)",
+      "Write(./.claude-run/**)"
+    ],
+    "deny": [
+      "Bash",
+      "NotebookEdit",
+      "Write(./tasks/**)",
+      "Edit(./tasks/**)",
+      "Write(./reports/**)",
+      "Edit(./reports/**)"
+    ]
+  }
+}

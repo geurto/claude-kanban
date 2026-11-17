@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Runs on serv when something in claude/tasks changes.
+# If a card has status: queued and run: now, wake the PC and start claude-kanban@now there.
+set -euo pipefail
+# shellcheck source=../serv.example.env
+source /etc/claude-kanban/serv.env
+
+sleep "${DEBOUNCE:-20}"
+
+# fm FILE KEY -> frontmatter value (plain YAML scalars only)
+fm() {
+  awk -v k="$2" -v q="'" '
+    NR==1 && $0!="---" {exit}
+    NR>1  && $0=="---" {exit}
+    NR>1 && index($0, k":")==1 {
+      v=substr($0, length(k)+2); sub(/^[ \t]+/, "", v); sub(/[ \t]+#.*$/, "", v)
+      gsub(/^"|"$/, "", v); gsub("^" q "|" q "$", "", v); print v; exit
+    }' "$1"
+}
+
+shopt -s nullglob
+wanted=0
+for f in "$CLAUDE_DIR"/tasks/*.md; do
+  if [[ "$(fm "$f" status)" == queued && "$(fm "$f" run)" == now ]]; then
+    wanted=1; echo "now-card: $(basename "$f")"; break
+  fi
+done
+(( wanted )) || exit 0
+
+ssh_up() { timeout 3 bash -c ">/dev/tcp/$PC_HOST/22" 2>/dev/null; }
+
+if ! ssh_up; then
+  echo "PC asleep, sending wake packet"
+  wakeonlan "$PC_MAC" >/dev/null
+  for _ in $(seq 1 "$(( WAKE_TIMEOUT / 5 ))"); do
+    sleep 5
+    ssh_up && break
+  done
+  ssh_up || { echo "PC did not come up within ${WAKE_TIMEOUT}s" >&2; exit 1; }
+  sleep 10   # let user services and the network settle
+fi
+
+# The key's forced command on the PC starts claude-kanban@now; the command sent here is ignored.
+ssh -i "$TRIGGER_KEY" -o BatchMode=yes -o ConnectTimeout=10 "claude@$PC_HOST" start
+echo "started claude-kanban@now on $PC_HOST"

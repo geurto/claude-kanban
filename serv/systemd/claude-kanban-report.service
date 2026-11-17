@@ -1,0 +1,9 @@
+[Unit]
+Description=Notify Home Assistant about a new Claude report
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=boardsync
+StateDirectory=claude-kanban
+ExecStart=/opt/claude-kanban/serv/bin/board-report-notify

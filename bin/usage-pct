@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# usage-pct [--stdin] [--debug]
+# Prints the account's weekly (seven_day) usage as an integer percentage, or nothing if unknown.
+#
+# Sources, first hit wins:
+#   1. --stdin: hook/status-line JSON on stdin with .rate_limits.seven_day.used_percentage
+#   2. $USAGE_CACHE, written by claude-home/statusline.sh (documented field), if fresh
+#   3. ~/.claude.json .cachedUsageUtilization (UNDOCUMENTED; may change or disappear)
+set -uo pipefail
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
+
+debug=0 from_stdin=0
+for a in "$@"; do
+  case "$a" in --stdin) from_stdin=1 ;; --debug) debug=1 ;; esac
+done
+dbg() { (( debug )) && echo "usage-pct: $*" >&2; return 0; }
+
+pct="" src=""
+
+if (( from_stdin )); then
+  pct=$(jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null) && src=stdin
+fi
+
+if [[ -z "$pct" && -f "$USAGE_CACHE" ]]; then
+  age=$(( $(date +%s) - $(stat -c %Y "$USAGE_CACHE") ))
+  if (( age < USAGE_CACHE_MAX_AGE )); then
+    pct=$(jq -r '.seven_day.used_percentage // empty' "$USAGE_CACHE" 2>/dev/null) && src="statusline cache (${age}s old)"
+  else
+    dbg "statusline cache is ${age}s old, ignoring"
+  fi
+fi
+
+if [[ -z "$pct" && -f "$HOME/.claude.json" ]]; then
+  pct=$(jq -r '
+    [ .cachedUsageUtilization? // empty | .. | objects | select(has("seven_day")) | .seven_day
+      | (.used_percentage // (.utilization as $u | if $u == null then empty
+                                                   elif $u <= 1 then $u * 100 else $u end)) ]
+    | first // empty' "$HOME/.claude.json" 2>/dev/null) && src="$HOME/.claude.json (undocumented)"
+fi
+
+if [[ -z "$pct" ]]; then
+  dbg "no usage data found"
+  exit 0
+fi
+dbg "source: $src, raw value: $pct"
+printf '%.0f\n' "$pct"

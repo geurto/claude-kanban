@@ -1,0 +1,12 @@
+# Add next to the CouchDB service in the existing LiveSync compose project on serv.
+services:
+  livesync-bridge:
+    image: vrtmrz/livesync-bridge:latest
+    restart: unless-stopped
+    # Run as the shared group so boardsync (rsync from the PC) and the bridge can both write.
+    user: "${BOARD_UID}:${BOARD_GID}"
+    volumes:
+      - ./livesync-bridge/dat:/livesync-bridge/dat        # config.json goes here
+      - /srv/livesync-bridge/data:/livesync-bridge/data   # the claude/ folder on disk
+    depends_on:
+      - couchdb

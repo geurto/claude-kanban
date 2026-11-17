@@ -1,0 +1,11 @@
+# User unit for the claude user. Instances: claude-kanban@now, claude-kanban@night.
+# Started by the serv trigger (now) and by the system wake timer (night).
+[Unit]
+Description=Claude task board run (%i)
+
+[Service]
+Type=oneshot
+Environment=PATH=/run/wrappers/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin
+ExecStart=%h/claude-kanban/bin/board-run %i
+TimeoutStartSec=8h
+Nice=5

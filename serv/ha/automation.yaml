@@ -1,0 +1,17 @@
+# Home Assistant: push "report ready" to the phone. Replace the notify service with yours.
+alias: Claude morning report ready
+mode: queued
+triggers:
+  - trigger: webhook
+    webhook_id: claude-kanban-report
+    allowed_methods: [POST]
+    local_only: true
+actions:
+  - action: notify.mobile_app_peter_phone
+    data:
+      title: "Claude report {{ trigger.json.date }}"
+      message: "{{ trigger.json.summary }}"
+      data:
+        # Opens the report in Obsidian; adjust the vault name.
+        clickAction: "obsidian://open?vault=Vault&file=claude%2Freports%2F{{ trigger.json.date }}"
+        url: "obsidian://open?vault=Vault&file=claude%2Freports%2F{{ trigger.json.date }}"

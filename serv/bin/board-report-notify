@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Runs on serv when claude/reports changes. Sends each new report to Home Assistant once.
+set -euo pipefail
+# shellcheck source=../serv.example.env
+source /etc/claude-kanban/serv.env
+
+state=/var/lib/claude-kanban/notified
+mkdir -p "$(dirname "$state")"
+touch "$state"
+
+shopt -s nullglob
+for f in "$CLAUDE_DIR"/reports/*.md; do
+  name=$(basename "$f" .md)
+  grep -qxF "$name" "$state" && continue
+  # First paragraph after the title is the summary line
+  summary=$(awk '/^---$/ {fm++; next} fm>=2 && /^# / {title=1; next} title && NF {print; exit}' "$f")
+  jq -n --arg date "$name" --arg summary "${summary:-New report}" '{date: $date, summary: $summary}' |
+    curl -fsS -X POST -H 'Content-Type: application/json' --data @- \
+      "$HA_URL/api/webhook/$HA_WEBHOOK_ID" >/dev/null
+  echo "$name" >> "$state"
+  echo "notified: $name"
+done

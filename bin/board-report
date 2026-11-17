@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# board-report – write claude/reports/YYYY-MM-DD.md covering everything since the last report:
+# board cards that ran, PRs on claude/* branches, commits by the claude user, research notes.
+# Writes nothing when nothing happened.
+set -euo pipefail
+# shellcheck source=lib.sh
+source "$(dirname "$0")/lib.sh"
+ensure_dirs
+
+since=$(cat "$STATE_DIR/last-report" 2>/dev/null || date -u -d "-1 day" +%FT%TZ)
+now=$(date -u +%FT%TZ)
+since_day=$(date -u -d "$since" +%F)
+facts="$(mktemp -d)"
+trap 'rm -rf "$facts"' EXIT
+
+# 1. Board events since the last report
+if [[ -f "$EVENTS_FILE" ]]; then
+  jq -c --arg since "$since" 'select(.ts > $since)' "$EVENTS_FILE" | jq -s . > "$facts/events.json"
+else
+  echo '[]' > "$facts/events.json"
+fi
+
+# 2. PRs and commits per repo (gh runs here, outside any Claude run)
+me_email=$(git config --global user.email || true)
+echo '[]' > "$facts/prs.json"
+echo '[]' > "$facts/commits.json"
+for dir in "$CODE_DIR"/*/; do
+  [[ -d "$dir/.git" ]] || continue
+  repo=$(basename "$dir")
+  git -C "$dir" fetch -q --all --prune 2>/dev/null || true
+
+  if prs=$(cd "$dir" && gh pr list --state all --limit 50 --search "updated:>=$since_day" \
+             --json number,title,url,state,isDraft,headRefName,createdAt,mergedAt 2>/dev/null); then
+    jq --arg repo "$repo" --arg since "$since" \
+      '[.[] | select(.headRefName | startswith("claude/"))
+            | select(.createdAt > $since or ((.mergedAt // "") > $since))
+            | . + {repo: $repo}]' <<<"$prs" > "$facts/p.json"
+    jq -s 'add' "$facts/prs.json" "$facts/p.json" > "$facts/t.json" && mv "$facts/t.json" "$facts/prs.json"
+  fi
+
+  if [[ -n "$me_email" ]]; then
+    git -C "$dir" log --all --since="$since" --author="$me_email" --format='%h%x09%s%x09%D' 2>/dev/null |
+      jq -R --arg repo "$repo" 'split("\t") | {repo: $repo, sha: .[0], subject: .[1], refs: .[2]}' |
+      jq -s . > "$facts/c.json"
+    jq -s 'add' "$facts/commits.json" "$facts/c.json" > "$facts/t.json" && mv "$facts/t.json" "$facts/commits.json"
+  fi
+done
+
+jq -n --arg since "$since" --arg now "$now" \
+  --slurpfile events "$facts/events.json" --slurpfile prs "$facts/prs.json" --slurpfile commits "$facts/commits.json" \
+  '{since: $since, until: $now, board: $events[0], pull_requests: $prs[0], commits: $commits[0]}' > "$facts/facts.json"
+
+if jq -e '(.board + .pull_requests + .commits) | length == 0' "$facts/facts.json" >/dev/null; then
+  log "nothing happened since $since; no report"
+  echo "$now" > "$STATE_DIR/last-report"
+  exit 0
+fi
+
+day=$(date +%F)
+out="$REPORTS_DIR/$day.md"
+rundir="$RUNS_DIR/$(date +%Y%m%d-%H%M%S)-report"
+mkdir -p "$rundir"
+cp "$facts/facts.json" "$rundir/"
+{ render_prompt "$BOARD_REPO/prompts/report.md" "DATE=$day"
+  echo; echo '```json'; cat "$facts/facts.json"; echo '```'
+} > "$rundir/prompt.md"
+
+body=""
+if run_claude report "$rundir" "$rundir/prompt.md" "$rundir/claude.json" "$CODE_DIR" "$VAULT_DIR" "$WORKTREES_DIR"; then
+  body=$(jq -r '.result // ""' "$rundir/claude.json" 2>/dev/null || true)
+fi
+
+if [[ -z "$body" ]]; then
+  log "claude report step failed; writing the plain version"
+  body=$(jq -r '
+    "## Board\n" +
+      (if (.board | length) == 0 then "Nothing ran.\n" else
+        (.board | map("- **\(.title // .slug)** (\(.type // "-")): \(.status)" +
+          (if .pr then " — [PR](\(.pr))" else "" end) +
+          (if .note then " — [[\(.note | sub("^output/"; "") | sub("\\.md$"; ""))]]" else "" end) +
+          (if .question then "\n  - Question: \(.question)" else "" end)) | join("\n")) + "\n" end) +
+    "\n## Pull requests\n" +
+      (if (.pull_requests | length) == 0 then "None.\n" else
+        (.pull_requests | map("- \(.repo) #\(.number): [\(.title)](\(.url)) — \(.state | ascii_downcase)\(if .isDraft then ", draft" else "" end)") | join("\n")) + "\n" end) +
+    "\n## Commits\n" +
+      (if (.commits | length) == 0 then "None.\n" else
+        (.commits | map("- \(.repo) `\(.sha)` \(.subject)") | join("\n")) + "\n" end)
+  ' "$facts/facts.json")
+fi
+
+{
+  echo '---'
+  echo "date: $day"
+  echo "since: \"$since\""
+  echo "tasks: $(jq '.board | map(select(.slug)) | length' "$facts/facts.json")"
+  echo "prs: $(jq '.pull_requests | length' "$facts/facts.json")"
+  echo '---'
+  echo "# Claude report $day"
+  echo
+  printf '%s\n' "$body"
+} > "$out"
+
+echo "$now" > "$STATE_DIR/last-report"
+log "report written: $out"

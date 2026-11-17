@@ -1,0 +1,8 @@
+[Unit]
+Description=Wake the PC and start a board run for run-now cards
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=boardsync
+ExecStart=/opt/claude-kanban/serv/bin/board-now-trigger

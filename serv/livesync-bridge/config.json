@@ -1,0 +1,23 @@
+{
+  "peers": [
+    {
+      "type": "couchdb",
+      "name": "vault-claude-folder",
+      "group": "board",
+      "database": "obsidian",
+      "username": "CHANGE_ME",
+      "password": "CHANGE_ME",
+      "url": "http://couchdb:5984",
+      "passphrase": "",
+      "obfuscatePassphrase": "",
+      "baseDir": "claude/"
+    },
+    {
+      "type": "storage",
+      "name": "claude-folder-on-disk",
+      "group": "board",
+      "baseDir": "./data/claude/",
+      "scanOfflineChanges": true
+    }
+  ]
+}

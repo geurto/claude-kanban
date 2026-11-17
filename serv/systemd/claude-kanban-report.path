@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the Claude board for new morning reports
+
+[Path]
+PathChanged=/srv/livesync-bridge/data/claude/reports
+Unit=claude-kanban-report.service
+
+[Install]
+WantedBy=paths.target

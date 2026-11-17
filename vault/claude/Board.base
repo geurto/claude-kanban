@@ -1,0 +1,27 @@
+filters:
+  and:
+    - file.inFolder("claude/tasks")
+properties:
+  note.status:
+    displayName: Status
+  note.run:
+    displayName: Run
+  note.type:
+    displayName: Type
+  note.repo:
+    displayName: Repo
+views:
+  - type: table
+    name: Board
+    groupBy:
+      property: note.status
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - run
+      - type
+      - repo
+      - ran
+      - pr
+      - result
