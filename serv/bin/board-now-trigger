@@ -27,10 +27,11 @@ for f in "$CLAUDE_DIR"/tasks/*.md; do
 done
 (( wanted )) || exit 0
 
-ssh_up() { timeout 3 bash -c ">/dev/tcp/$PC_HOST/22" 2>/dev/null; }
+port="${PC_SSH_PORT:-24473}"
+ssh_up() { timeout 3 bash -c ">/dev/tcp/$PC_HOST/$port" 2>/dev/null; }
 
 if ! ssh_up; then
-  echo "PC asleep, sending wake packet"
+  echo "PC off, sending wake packet"
   wakeonlan "$PC_MAC" >/dev/null
   for _ in $(seq 1 "$(( WAKE_TIMEOUT / 5 ))"); do
     sleep 5
@@ -41,5 +42,5 @@ if ! ssh_up; then
 fi
 
 # The key's forced command on the PC starts claude-kanban@now; the command sent here is ignored.
-ssh -i "$TRIGGER_KEY" -o BatchMode=yes -o ConnectTimeout=10 "claude@$PC_HOST" start
+ssh -i "$TRIGGER_KEY" -p "$port" -o BatchMode=yes -o ConnectTimeout=10 "claude@$PC_HOST" start
 echo "started claude-kanban@now on $PC_HOST"

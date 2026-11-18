@@ -5,8 +5,8 @@ through unattended, either right away or overnight, plus a morning report. The r
 `claude` user's Claude Code config for Remote Control (phase 1): `CLAUDE.md`, `settings.json`,
 hooks and the usage cap.
 
-The NixOS side (user, Remote Control services, suspend/wake) lives in the `dev` repo. The few
-additions it needs for this repo are listed under [dev repo additions](#dev-repo-additions).
+The NixOS side (user, Remote Control services, idle power-off) lives in the `dev` repo, which
+imports this repo's NixOS module, see [dev repo additions](#dev-repo-additions).
 
 ## How it works
 
@@ -16,7 +16,7 @@ flowchart LR
   couch <-->|livesync-bridge,<br/>claude/ only| folder["/srv/.../data/claude<br/>on serv"]
   folder -->|path unit: run-now card| trigger["board-now-trigger<br/>WoL + ssh"]
   trigger -->|claude-kanban@now| runner
-  timer["02:00 wake timer<br/>on the PC"] -->|claude-kanban@night| runner
+  timer["HA WoL 01:58 +<br/>02:00 timer on the PC"] -->|claude-kanban@night| runner
   runner["board-run on the PC<br/>(claude user)"] <-->|rsync over ssh| folder
   runner --> claude["claude -p<br/>sandboxed per task type"]
   runner -->|push branch, draft PR| github[(GitHub)]
@@ -24,12 +24,12 @@ flowchart LR
 ```
 
 1. You add a card in Obsidian and drag it to **queued**.
-2. A card with `run: now` makes serv wake the PC and start a run within about a minute.
+2. A card with `run: now` makes serv wake the PC and start a run within a few minutes.
    Everything else waits for the 02:00 run.
 3. The runner pulls the `claude/` folder from serv, runs each queued card through headless
    `claude -p`, and pushes the results back after every card. LiveSync delivers them to your phone.
 4. At the end of the night run it writes `claude/reports/YYYY-MM-DD.md`, and serv sends a
-   Home Assistant notification. The PC goes back to sleep through the phase 1 idle timer.
+   Home Assistant notification. The PC powers off again through the phase 1 idle timer.
 
 ## The board
 
@@ -140,7 +140,7 @@ claude-kanban/
 │   ├── statusline.sh        shows usage, caches rate_limits
 │   └── hooks/
 │       ├── usage-gate.sh    refuses prompts above the cap
-│       └── activity.sh      restarts the idle-suspend clock
+│       └── activity.sh      restarts the idle power-off clock
 ├── code-root/CLAUDE.md      → ~/code/CLAUDE.md, rules for every repo
 ├── run-settings/            permissions per board run type
 ├── prompts/                 prompts per board run type
@@ -167,31 +167,29 @@ coding rules don't leak into them.
 
 ### dev repo additions
 
-The NixOS config in the `dev` repo needs three additions:
+The system side lives in this repo as a NixOS module (`nix/module.nix`, exported as
+`nixosModules.default`). The NixOS flake in the `dev` repo takes this repo as the `claude-kanban`
+input and enables it for the PC:
 
 ```nix
-users.users.claude = {
-  packages = with pkgs; [ jq yq-go rsync gh git ];
-  openssh.authorizedKeys.keys = [
-    # serv's trigger key may only start a run-now pass
-    ''restrict,command="systemctl --user start --no-block claude-kanban@now.service" ssh-ed25519 AAAA... serv-board-trigger''
-  ];
-};
-
-# Wake from S3 at 02:00 and start the night run
-systemd.services.claude-kanban-night = {
-  serviceConfig.Type = "oneshot";
-  script = "${pkgs.systemd}/bin/systemctl --user -M claude@ start --no-block claude-kanban@night.service";
-};
-systemd.timers.claude-kanban-night = {
-  wantedBy = [ "timers.target" ];
-  timerConfig = { OnCalendar = "*-*-* 02:00"; WakeSystem = true; Persistent = false; };
+services.claude-kanban = {
+  enable = true;
+  triggerKeys = [ "ssh-ed25519 AAAA... serv-board-trigger" ];  # serv's board-trigger.pub
 };
 ```
 
-`WakeSystem` needs a system timer, not a user timer, hence the `systemctl --user -M claude@` hop.
-If the board doesn't wake reliably from S3 on an RTC alarm, schedule a Wake-on-LAN in Home Assistant
-at 01:58 instead.
+It adds the runner's packages to the `claude` user, installs each trigger key with a forced command
+so serv can only start a run-now pass, and starts the night pass at `nightRun.time` (02:00). The
+`claude` user, Remote Control and the idle power-off stay in `dev`.
+
+The PC powers off when idle rather than suspending (the legacy NVIDIA driver hangs on S3), so a
+timer can't wake it. Schedule a Wake-on-LAN in Home Assistant at 01:58; the 60-minute idle timer
+gives every boot a full idle period of grace, and the runner keeps the idle clock fresh while it
+works.
+
+The input points at the local checkout (the GitHub repo is private and the rebuild runs as root),
+so Nix only sees tracked files. After changing the module, run `nix flake update claude-kanban` in
+`dev/nixos` before rebuilding.
 
 ### PC, as `claude`
 
@@ -223,7 +221,7 @@ it with a regular file, re-run `install.sh`; it backs up the file and restores t
    ```
 
 5. As `boardsync`: `ssh-keygen -t ed25519 -f ~/.ssh/board-trigger -N ''`. Its public key goes into
-   the dev repo snippet above.
+   `services.claude-kanban.triggerKeys` in the dev repo (see above).
 6. `git clone <this repo> /opt/claude-kanban`, copy `serv/serv.example.env` to
    `/etc/claude-kanban/serv.env` and fill in the PC's MAC and hostname.
 7. Copy `serv/systemd/*` to `/etc/systemd/system/`, then
@@ -254,8 +252,8 @@ Test in this order, one step at a time:
       the card goes to `review` and the result note appears on the phone.
 - [ ] A research card whose brief asks it to run a shell command: it refuses and says so in the note.
 - [ ] A small code card on a scratch repo: a draft PR appears, signed, on `claude/board-<card>`.
-- [ ] Queue a `run: now` card on the phone while the PC sleeps: it wakes and runs within about
-      2 minutes (`journalctl -u claude-kanban-now` on serv).
+- [ ] Queue a `run: now` card on the phone while the PC is off: it boots and runs within about
+      3 minutes (`journalctl -u claude-kanban-now` on serv).
 - [ ] `systemctl --user start claude-kanban@night` writes a report, and HA notifies the phone.
 - [ ] Set `CAP_WEEKLY=1`: a Remote Control prompt is refused with the cap message, and the runner
       stops before the first card. Reset it afterwards.

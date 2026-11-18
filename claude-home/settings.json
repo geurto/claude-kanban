@@ -1,8 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "model": "sonnet",
   "permissions": {
-    "defaultMode": "acceptEdits",
     "allow": [
       "Bash(nix develop --command:*)",
       "Bash(nix flake check:*)",
@@ -29,14 +27,24 @@
       "Bash(git push -f:*)",
       "Bash(gh repo delete:*)",
       "Bash(gh auth:*)"
-    ]
+    ],
+    "defaultMode": "auto"
   },
+  "model": "opus",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "$HOME/claude-kanban/claude-home/hooks/usage-gate.sh", "timeout": 10 },
-          { "type": "command", "command": "$HOME/claude-kanban/claude-home/hooks/activity.sh", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "$HOME/claude-kanban/claude-home/hooks/usage-gate.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$HOME/claude-kanban/claude-home/hooks/activity.sh",
+            "timeout": 5
+          }
         ]
       }
     ],
@@ -44,7 +52,11 @@
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "$HOME/claude-kanban/claude-home/hooks/activity.sh", "timeout": 5 }
+          {
+            "type": "command",
+            "command": "$HOME/claude-kanban/claude-home/hooks/activity.sh",
+            "timeout": 5
+          }
         ]
       }
     ]
@@ -53,5 +65,6 @@
     "type": "command",
     "command": "$HOME/claude-kanban/claude-home/statusline.sh",
     "refreshInterval": 60
-  }
+  },
+  "agentPushNotifEnabled": true
 }
