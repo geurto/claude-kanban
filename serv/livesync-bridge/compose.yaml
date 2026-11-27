@@ -1,12 +1,15 @@
 # Add next to the CouchDB service in the existing LiveSync compose project on serv.
 services:
   livesync-bridge:
-    image: vrtmrz/livesync-bridge:latest
+    build: https://github.com/vrtmrz/livesync-bridge.git
     restart: unless-stopped
     # Run as the shared group so boardsync (rsync from the PC) and the bridge can both write.
+    # Set BOARD_UID/BOARD_GID in the compose .env to the output of `id -u boardsync` / `id -g boardsync`.
     user: "${BOARD_UID}:${BOARD_GID}"
     volumes:
-      - ./livesync-bridge/dat:/livesync-bridge/dat        # config.json goes here
-      - /srv/livesync-bridge/data:/livesync-bridge/data   # the claude/ folder on disk
+      # The bridge runs from /app and resolves the paths in config.json against it.
+      - ./livesync-bridge/dat:/app/dat                          # config.json goes here
+      - /srv/livesync-bridge/data:/app/data                     # the claude/ folder on disk
+      - ./livesync-bridge/deno-storage:/deno-dir/location_data  # sync checkpoints
     depends_on:
       - couchdb
