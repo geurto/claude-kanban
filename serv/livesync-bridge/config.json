@@ -4,12 +4,13 @@
       "type": "couchdb",
       "name": "vault-claude-folder",
       "group": "board",
-      "database": "obsidian",
+      "database": "CHANGE_ME",
       "username": "CHANGE_ME",
       "password": "CHANGE_ME",
       "url": "http://couchdb:5984",
-      "passphrase": "",
-      "obfuscatePassphrase": "",
+      "passphrase": "CHANGE_ME",
+      "obfuscatePassphrase": "CHANGE_ME",
+      "idDerivationKey": "",
       "baseDir": "claude/"
     },
     {
