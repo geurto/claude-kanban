@@ -8,7 +8,7 @@
       "WebFetch",
       "Write(./output/**)",
       "Edit(./output/**)",
-      "Write(./.claude-run/**)"
+      "Edit(./.claude-run/**)"
     ],
     "deny": [
       "Bash",
