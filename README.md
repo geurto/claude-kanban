@@ -209,23 +209,54 @@ it with a regular file, re-run `install.sh`; it backs up the file and restores t
 ### serv
 
 1. `sudo apt install rsync jq curl wakeonlan`, and create a `boardsync` user.
-2. Add `serv/livesync-bridge/compose.yaml` to the LiveSync compose project, running as `boardsync`'s
-   uid and gid. Put `serv/livesync-bridge/config.json` in `./livesync-bridge/dat/`, filled in with the
-   CouchDB database, credentials and E2EE passphrase. Compare the key names with the upstream
-   `dat/config.sample.json` before starting it.
-3. Start the bridge. `/srv/livesync-bridge/data/claude` should fill with the vault's `claude/` folder.
-4. In `~boardsync/.ssh/authorized_keys`, restrict the PC's key to that folder:
+2. Add `serv/livesync-bridge/compose.yaml` to the LiveSync compose project. Set `BOARD_UID` and
+   `BOARD_GID` in the project's `.env` to `id -u boardsync` and `id -g boardsync`.
+3. Create the bridge's folders before the first start, owned by `boardsync`. The bridge doesn't
+   create its target folder, and Docker would create missing bind mounts as `root`:
+
+   ```
+   sudo mkdir -p /srv/livesync-bridge/data/claude livesync-bridge/dat livesync-bridge/deno-storage
+   sudo chown -R "$(id -u boardsync):$(id -g boardsync)" /srv/livesync-bridge/data livesync-bridge
+   sudo chmod -R g+rwX /srv/livesync-bridge/data
+   ```
+
+4. Copy `serv/livesync-bridge/config.json` to `./livesync-bridge/dat/` and fill in, from the
+   vault's Self-hosted LiveSync settings:
+   - `database`, `username`, `password`: the CouchDB database and its credentials.
+   - `passphrase` and `obfuscatePassphrase`: the E2EE passphrase, under Remote Configuration →
+     Configure E2EE. Both get the same value when *Obfuscate Properties* is on.
+   - `idDerivationKey`: the code from **Show current recovery code** (`sls-id-v1:…`). Vaults set up
+     with a recent plugin version use ID derivation v1 (`"idDerivationVersion": 1` in the plugin's
+     `data.json`); without this key the bridge fails with *document IDs do not match the configured
+     ID key*. Leave it empty if the vault has no ID derivation.
+
+   The file holds the vault's secrets: `sudo chmod 600 livesync-bridge/dat/config.json`. Compare the
+   key names with the upstream `dat/config.sample.json` before starting it.
+5. Start the bridge and check `docker compose logs -f livesync-bridge`. With no errors after
+   *Database is now ready*, `/srv/livesync-bridge/data/claude` fills with the vault's `claude/`
+   folder.
+6. In `~boardsync/.ssh/authorized_keys`, restrict the PC's key to that folder:
 
    ```
    restrict,command="rrsync /srv/livesync-bridge/data/claude" ssh-ed25519 AAAA... pc-board-sync
    ```
 
-5. As `boardsync`: `ssh-keygen -t ed25519 -f ~/.ssh/board-trigger -N ''`. Its public key goes into
+7. As `boardsync`: `ssh-keygen -t ed25519 -f ~/.ssh/board-trigger -N ''`. Its public key goes into
    `services.claude-kanban.triggerKeys` in the dev repo (see above).
-6. `git clone <this repo> /opt/claude-kanban`, copy `serv/serv.example.env` to
+8. `git clone <this repo> /opt/claude-kanban`, copy `serv/serv.example.env` to
    `/etc/claude-kanban/serv.env` and fill in the PC's MAC and hostname.
-7. Copy `serv/systemd/*` to `/etc/systemd/system/`, then
+9. Copy `serv/systemd/*` to `/etc/systemd/system/`, then
    `systemctl enable --now claude-kanban-now.path claude-kanban-report.path`.
+
+If the bridge starts but the folder stays empty:
+
+- `peer "claude-folder-on-disk" start() failed: NotFound`: `data/claude` doesn't exist, see step 3.
+- `PermissionDenied (os error 13)` right after connecting: `deno-storage` isn't owned by `boardsync`.
+- `document IDs do not match the configured ID key`: `idDerivationKey` or `obfuscatePassphrase` is
+  missing or wrong, see step 4.
+- No errors, but files from before a failed start never arrive: the bridge keeps a checkpoint in
+  `deno-storage` and only copies changes after it. Stop the bridge, empty `deno-storage` (keep the
+  folder and its owner), and start it again for a full copy.
 
 ### Home Assistant
 
@@ -238,7 +269,10 @@ name in the `obsidian://` link.
 2. Enable the core plugins Bases and Templates. Set the template folder to `claude/templates`.
 3. Open `claude/Board.base` and switch the view's layout to **Kanban**, grouped by `status`.
    The native Kanban layout needs Obsidian 1.14 or newer.
-4. New card: create a note in `claude/tasks/` with a short slug as its name (it becomes the branch
+4. In Self-hosted LiveSync → Sync settings, set **Sync mode** to *LiveSync* (or *Periodic* plus sync
+   on save on the phone). Otherwise changes only move when you press Replicate. The phone only
+   syncs while Obsidian is open, so open it briefly after queueing a card.
+5. New card: create a note in `claude/tasks/` with a short slug as its name (it becomes the branch
    name), insert the template, fill in the brief, drag it to `queued`.
 
 ## First run
