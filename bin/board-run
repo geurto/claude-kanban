@@ -107,6 +107,11 @@ run_code() {
   git -C "$repodir" fetch -q origin
   base=$(git -C "$repodir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || true
   base=${base:-main}
+  if ! git -C "$repodir" show-ref -q --verify "refs/remotes/origin/$base"; then
+    finish_card "$card" blocked "question=\`$repo\` has no \`origin/$base\` to branch from. Push a first commit to \`$base\` on GitHub, then queue the card again."
+    event slug="$slug" type=code status=blocked title="$slug" repo="$repo" question="no origin/$base in '$repo'"
+    return
+  fi
   branch="claude/board-$slug"
   wt="$WORKTREES_DIR/$slug"
 
@@ -202,7 +207,7 @@ run_card() {
   if (( rc != 0 )); then
     # a git, gh or sync step failed; don't let one card stop the whole run
     log "runner error ($rc) on $slug"
-    finish_card "$card" blocked "question=Runner error (exit $rc) after Claude finished, e.g. a failed push or PR. Log: $rundir"
+    finish_card "$card" blocked "question=Runner error (exit $rc) in a git, gh or sync step, before or after Claude ran. Log: $rundir"
     event slug="$slug" type="$type" status=failed title="$slug"
   fi
   sync_push
